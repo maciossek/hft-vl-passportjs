@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+
+  <title>HFT IPR Authentication mit Passport.js</title>
+
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <script async src="https://production-assets.codepen.io/assets/embed/ei.js"></script>
+</head>
+
+<body>
+  <div class="reveal">
+    <div class="slides">
+      <section data-background-image="https://media.giphy.com/media/kiIcPh1zmXNkSrOiau/giphy.gif">
+        <h1 class="title">IPR</h1>
+        <h3 class="title">Authentication mit Passport.js</h3>
+      </section>
+
+      <!-- Theroy -->
+      <section>
+        <section data-auto-animate data-background-size="cover"
+          data-background-image="https://media.giphy.com/media/SpoZWVAYlMCMGcLfqU/giphy.gif">
+          <h3 class="title">Passport.js</h3>
+        </section>
+        <section data-auto-animate data-auto-animate data-background-size="contain"
+          data-background-image="https://cdn.blog.zacfukuda.com/2019/7/passport-jwt-react@2x.png">
+        </section>
+        <section data-auto-animate>
+          <h3><a href="https://jwt.io/">JWT.io</a></h3>
+          <blockquote>JSON Web Tokens are an open, industry standard RFC 7519 method for representing claims securely
+            between two parties.</blockquote>
+        </section>
+        <section data-auto-animate>
+          <h3>ER Diagram</h3>
+          <div class="mermaid">
+            <pre>
+              erDiagram
+                User ||--o{ Story : owns
+                User {
+                    int id
+                    uuid uuid
+                    string email
+                }
+                
+                Story {
+                    int id
+                    uuid uuid
+                    string title
+                    string imageUrl
+                    timestamp created_at
+                    timestamp updated_at
+                }
+            </pre>
+          </div>
+        </section>
+        <section data-auto-animate>
+          <h3>Migration User Table</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            export async function up(knex) {
+              await knex.schema.createTable("user", (table) => {
+                table.bigIncrements("id").primary();
+                table.uuid("uuid").index().notNullable();
+                table.string("email").unique().notNullable();
+                table.string("password").notNullable();
+                table.timestamps(true, true);
+              });
+            }
+            
+            export async function down(knex) {
+              await knex.schema.dropTable("user");
+            }            
+          </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>Migration Story Table</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            const tableName = "story";
+
+            export async function up(knex) {
+              await knex.schema.table(tableName, (table) => {
+                table.bigInteger("userId").references("id").inTable("user").onDelete("CASCADE").notNullable();
+              });
+            }
+
+            export async function down(knex) {
+              await knex.schema.table(tableName, (table) => {
+                table.dropColumn("userId");
+              });
+            }
+          </script></code></pre>
+        </section>
+        <section data-auto-animate data-background-color="hotpink">
+          <h3>🤨</h3>
+          <ul>
+            <li class="fragment">Wenn schon stories existieren...?</li>
+          </ul>
+        </section>
+        <section data-auto-animate>
+          <h3>DB Seeds</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import { v4 as uuid } from "uuid";
+            import bcrypt from "bcrypt";
+            
+            const tableName = "user";
+
+            export async function seed(knex) {
+              const user1 = await knex(tableName)
+                .insert({
+                  uuid: uuid(),
+                  email: "hans@crapstories.wat",
+                  password: bcrypt.hashSync("test", 10),
+                })
+                .returning("id");
+
+              const user2 = await knex(tableName)
+                .insert({
+                  uuid: uuid(),
+                  email: "bernd@crapstories.wat",
+                  password: bcrypt.hashSync("test", 10),
+                })
+                .returning("id");
+
+              await knex("story").insert({
+                uuid: uuid(),
+                title: "a test story",
+                imageUrl: "https://picsum.photos/300",
+                userId: user1[0].id,
+              });
+              await knex("story").insert({
+                uuid: uuid(),
+                title: "another story",
+                imageUrl: "https://picsum.photos/1440",
+                userId: user2[0].id,
+              });
+            }
+
+          </script></code></pre>
+        </section>
+      </section>
+
+
+      <!-- Signup -->
+      <section>
+        <section data-auto-animate data-background-size="cover"
+          data-background-image="https://media.giphy.com/media/sDcfxFDozb3bO/giphy.gif">
+          <h3 class="title">Signup</h3>
+          <small class="white">npm i bcrypt passport passport-local passport-jwt jsonwebtoken</small>
+        </section>
+        <section data-auto-animate>
+          <h3>Auth Routes</h3>
+          <ul>
+            <li class="fragment">/signup</li>
+            <li class="fragment">/login</li>
+          </ul>
+        </section>
+        <section data-auto-animate>
+          <h3>UserRepository.js</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import httpStatus from "http-status";
+            import ApiError from "../exception/ApiError";
+            import PostgresDataSource from "../postgres.datasource";
+            import { v4 as uuid } from "uuid";
+            import bcrypt from "bcrypt";
+
+            const userColumns = ["id", "uuid", "email", "password", "created_at", "updated_at"];
+
+            export default class UserRepository extends PostgresDataSource {
+              tableName = "user";
+
+              static async checkPassword(givenPassword, userPassword) {
+                return await bcrypt.compare(givenPassword, userPassword);
+              }
+
+              async getUser(email) {
+                const user = await this.knex(this.tableName).select(userColumns).where({ email }).first();
+
+                if (!user) {
+                  throw new ApiError(`User with '${uuid}' does not exist`, httpStatus.NOT_FOUND);
+                }
+
+                return user;
+              }
+
+              async createUser(email, password) {
+                const hashedPassword = await bcrypt.hash(password, 10);
+                console.log(email, password, hashedPassword);
+
+                return await this.knex(this.tableName).insert({ uuid: uuid(), email, password: hashedPassword }).returning(userColumns);
+              }
+            }
+
+          </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>User Routes Signup</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import { Router } from "express";
+            import { signup } from "./user.handler";
+            import { createValidator } from "express-joi-validation";
+            import { createUserValidation } from "./user.validation";
+
+            const validator = createValidator();
+            const router = Router();
+
+            router.route("/signup").post(validator.body(createUserValidation), signup);
+
+            export default router;
+          </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>user.validation</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import Joi from "@hapi/joi";
+
+            export const createUserValidation = Joi.object({
+              email: Joi.string().email().required(),
+              password: Joi.string().min(5).required(),
+            });
+          </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>Signup test</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import request from "supertest";
+            import knex from "../../config/knex";
+            import jwt from "jsonwebtoken";
+            
+            describe("User Signup Route", () => {
+              beforeAll(async () => {
+                await knex("user").del();
+              });
+            
+              it("/user/signup POST should create a new user", async () => {
+                const response = await request(global.app).post("/user/signup").send({ email: "hans@wurst.de", password: "lolwtfhaha" });
+            
+                expect(response.status).toBe(200);
+                expect(response.body).toMatchObject({ token: jwt.sign({ email: "hans@wurst.de" }, "jwt_secret", { expiresIn: "2h" }) });
+              });
+            });            
+          </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>User Handler</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import UserRepository from "./user.repository";
+            import consola from "consola";
+            import jwt from "jsonwebtoken";
+
+            export async function signup(req, res, next) {
+              try {
+                const userRepository = new UserRepository();
+                const { email, password } = req.body;
+            
+                const user = await userRepository.createUser(email, password);
+            
+                const token = jwt.sign({ email: user[0].email }, "jwt_secret", { expiresIn: "2h" });
+            
+                res.json({ token: token });
+              } catch (err) {
+                consola.error(err);
+                next(err);
+              }
+            }
+          </script></code></pre>
+        </section>
+      </section>
+
+      <!-- Login -->
+      <section>
+        <section data-auto-animate data-background-size="cover"
+          data-background-image="https://media.giphy.com/media/yx400dIdkwWdsCgWYp/giphy.gif">
+          <h3 class="title">Login</h3>
+        </section>
+        <section data-auto-animate>
+          <h3>Passport.js config</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import { Strategy } from "passport-local";
+            import passport from "passport";
+
+            passport.use(
+              new Strategy(async (email, password, done) => {
+                // 1. find user by email
+                // 2. check password
+
+                return done(null, {})
+              })
+            );
+
+            export default passport;
+          </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>User Routes</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers="11-16"><script type="text/template">
+            import { Router } from "express";
+            import { signup, login } from "./user.handler";
+            import { createValidator } from "express-joi-validation";
+            import { createUserValidation } from "./user.validation";
+            import passport from "../config/passport";
+
+            const validator = createValidator();
+            const router = Router();
+
+            router.route("/signup").post(validator.body(createUserValidation), signup);
+            router.route("/login").post(
+              passport.authenticate("local", {
+                session: false,
+              }),
+              login
+            );
+
+            export default router;
+          </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>Login test</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import request from "supertest";
+            import knex from "../../config/knex";
+            import jwt from "jsonwebtoken";
+            import UserRepository from "../user.repository";
+
+            describe("User Login Route", () => {
+              beforeAll(async () => {
+                await knex("user").del();
+
+                const userRepo = new UserRepository();
+                await userRepo.createUser("hans@wurst.de", "lolwtfhaha");
+              });
+
+              it("/user/login POST should return a token", async () => {
+                const response = await request(global.app).post("/user/login").send({ email: "hans@wurst.de", password: "lolwtfhaha" });
+
+                expect(response.status).toBe(200);
+                expect(response.body).toMatchObject({ token: jwt.sign({ email: "hans@wurst.de" }, "jwt_secret", { expiresIn: "2h" }) });
+              });
+
+              it("/user/login POST should return 401 with wrong credentials", async () => {
+                const response = await request(global.app).post("/user/login").send({ email: "hans@wurst.de", password: "lolwtfhahaaaaa" });
+
+                expect(response.status).toBe(401);
+              });
+            });
+          </script></code></pre>
+        </section>
+
+
+        <section data-auto-animate>
+          <h3>Passport.js config</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers="5-16"><script type="text/template">
+            import { Strategy as LocalStrategy } from "passport-local";
+            import passport from "passport";
+            import UserRepository from "../user/user.repository";
+
+            passport.use(
+              new LocalStrategy({ usernameField: "email" }, async (email, password, done) => {
+                const userRepo = new UserRepository();
+                const user = await userRepo.getUser(email);
+            
+                if (!user) {
+                  return done(null, false, { message: "Invalid credentials" });
+                }
+            
+                const passwordOk = await UserRepository.checkPassword(password, user?.password);
+            
+                if (!passwordOk) {
+                  return done(null, false, { message: "Invalid credentials" });
+                }
+                return done(null, user);
+              })
+            );
+          </script></code></pre>
+        </section>
+
+      </section>
+
+
+      <!-- secure api calls -->
+      <section>
+        <section data-auto-animate data-background-size="cover"
+          data-background-image="https://media.giphy.com/media/kYjmmZWtDiY3m/giphy.gif">
+          <h3 class="title">API Aufrufe mit Token absichern</h3>
+        </section>
+        <section data-auto-animate>
+          <h3>Passport.js config</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import { Strategy as JWTStrategy, ExtractJwt } from "passport-jwt";
+            ...
+
+            passport.use(
+              new JWTStrategy(
+                {
+                  jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+                  secretOrKey: "jwt_secret",
+                },
+                async (jwt_payload, done) => {
+                  const userRepo = new UserRepository();
+                  const user = await userRepo.getUser(jwt_payload.email);
+
+                  // mehr checks
+
+                  if (!user) {
+                    return done(null, false, { message: "Invalid credentials" });
+                  }
+                  return done(null, user);
+                }
+              )
+            );
+          </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>Index Routes</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers="20-26"><script type="text/template">
+            import { Router } from "express";
+            import httpStatus from "http-status";
+            import config from "./config/env";
+            import storyRoutes from "./story/story.routes";
+            import userRoutes from "./user/user.routes";
+            import passport from "./config/passport";
+
+            const router = Router();
+
+            router.get("/health", (req, res) => res.status(httpStatus.OK).send());
+
+            router.get("/version", (req, res) => {
+              res.json({
+                version: config.version,
+                commitHash: config.commitHash,
+              });
+            });
+
+            router.use("/user", userRoutes);
+            router.use(
+              "/story",
+              passport.authenticate("jwt", {
+                session: false,
+              }),
+              storyRoutes
+            );
+
+            export default router;
+          </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>jest.setup.js</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers="12-23"><script type="text/template">
+            import "dotenv/config";
+            import knex from "./src/config/knex";
+            import passport from "passport";
+
+            beforeAll(() => {
+              global.app = require("./src/config/express").default;
+            });
+            afterAll(async () => {
+              knex.destroy();
+            });
+
+            jest.mock("passport-jwt", () => ({
+              ExtractJwt: {
+                fromAuthHeaderAsBearerToken: () => "hans",
+              },
+              Strategy: class Strategy extends passport.Strategy {
+                name = "jwt";
+
+                authenticate() {
+                  this.pass({ id: 1 });
+                }
+              },
+            }));
+          </script></code></pre>
+        </section>
+      </section>
+
+
+      <!-- Frontend -->
+      <section>
+        <section data-auto-animate data-background-size="cover"
+          data-background-image="https://media.giphy.com/media/DhstvI3zZ598Nb1rFf/giphy.gif">
+          <h3 class="title">Frontend</h3>
+        </section>
+        <section data-auto-animate>
+          <h3>Aufgaben</h3>
+          <ul>
+            <li>Login durchführen</li>
+            <li>Token speichern</li>
+            <li>Token bei jedem Request mitschicken</li>
+          </ul>
+        </section>
+        <section data-auto-animate>
+          <h3>RequireAuth.js anpassen</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import { Navigate, useLocation } from "react-router-dom";
+
+            export default function ProtectedRoute({ children }) {
+              const location = useLocation();
+
+              const logout = async () => {
+                localStorage.clear("accessToken");
+              };
+
+              if (localStorage.getItem("accessToken")) {
+                return children;
+              } else {
+                logout();
+              }
+
+              return <Navigate to="/public/login" state={{ from: location }} />;
+            }
+          </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>RequireAuth.spec.js anpassen</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+          it("Should let us through if we are logged in", async () => {
+            const spy = jest
+              .spyOn(window.localStorage.__proto__, "getItem")
+              .mockImplementation(() => "asd");
+        
+            render(
+              <AllProviders>
+                <RequireAuth>
+                  <p>crap stories</p>
+                </RequireAuth>
+              </AllProviders>
+            );
+            const headline = await screen.findByText(/Crap stories/i);
+            expect(headline).toBeInTheDocument();
+            spy.mockReset();
+          });
+        </script></code></pre>
+        </section>
+
+        <section data-auto-animate>
+          <h3>LoginView</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            const handleSubmit = async (values) => {
+              const { username, password } = values;
+              const response = await axios.post(`${env.API_ENDPOINT}/user/login`, {
+                email: username,
+                password: password,
+              });
+          
+              console.log(response);
+          
+              if (response.statusText === "OK") {
+                message.success("Login successful");
+                localStorage.setItem("accessToken", response.data.token);
+          
+                if (locationState) {
+                  navigate(locationState.from);
+                } else {
+                  navigate("/");
+                }
+              } else {
+                setErrorMessage("Invalid username or password");
+              }
+            };
+        </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>Axios config</h3>
+          <small>npm i axios</small>
+          <pre><code class="js" data-trim data-noescape data-line-numbers><script type="text/template">
+            import env from "./env";
+            import axios from "axios";
+
+            const instance = axios.create({
+              baseURL: env.API_ENDPOINT,
+              headers: {
+                "Content-Type": "application/json",
+              },
+            });
+
+            instance.interceptors.request.use(
+              (config) => {
+                console.log("lel, config");
+                const token = localStorage.getItem("accessToken");
+
+                if (token) {
+                  config.headers.Authorization = `Bearer ${token}`;
+                } else {
+                  delete instance.defaults.headers.common.Authorization;
+                }
+                return config;
+              },
+
+              (error) => Promise.reject(error)
+            );
+
+            export default instance;
+        </script></code></pre>
+        </section>
+        <section data-auto-animate>
+          <h3>useStory anpassen</h3>
+          <pre><code class="js" data-trim data-noescape data-line-numbers="3, 11-16"><script type="text/template">
+            import { useState } from "react";
+            import env from "../../../config/env";
+            import axios from "../../../config/axios";
+
+            export default function useStory() {
+              const [randomStory, setRandomStory] = useState();
+              const [loading, setLoading] = useState(true);
+
+              const getRandomStory = async () => {
+                setLoading(true);
+                try {
+                  const response = await axios.get(`/story/random`);
+                  setLoading(false);
+                  setRandomStory(response.data);
+                } catch (err) {
+                  throw err;
+                }
+              };
+
+              return {
+                operations: { getRandomStory },
+                state: { loading, randomStory },
+              };
+            }
+        </script></code></pre>
+        </section>
+      </section>
+
+
+      <!-- Bad bad bad -->
+      <section>
+        <section data-auto-animate data-background-color="hotpink">
+          <h3>🤨</h3>
+          <ul>
+            <li class="fragment">Token laufen niemals ab</li>
+            <li class="fragment">User DB mit der restlichen DB vermischt</li>
+            <li class="fragment">Eigene Auth Logik != Standarts</li>
+            <li class="fragment">Eigene Auth Logik != Standarts</li>
+          </ul>
+        </section>
+      </section>
+
+      <section>
+        <h3>Links</h3>
+        <ul>
+
+          <li>
+            <a href="https://github.com/maciossek/crap-stories-node/tree/feature/passport">Backend Repo</a>
+          </li>
+          <li>
+            <a href="https://github.com/maciossek/crap-stories-react/tree/feature/passport">Frontend Repo</a>
+          </li>
+          <li>
+            <a href="https://www.zacfukuda.com/blog/passport-jwt-react">Tutorial</a>
+          </li>
+        </ul>
+      </section>
+    </div>
+  </div>
+</body>
+
+</html>
